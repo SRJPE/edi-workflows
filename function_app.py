@@ -9,6 +9,7 @@ import requests
 from azure.storage.blob import BlobServiceClient, ContainerClient, PublicAccess
 from dataclasses import dataclass, field
 from typing import Optional, Dict
+import json
 
 from sqlalchemy.sql.base import Options
 from sqlalchemy.sql.lambdas import NonAnalyzedFunction
@@ -142,14 +143,6 @@ def update_eml(eml: BeautifulSoup, kv: Dict[str, str]):
             current.append(val)
 
 
-def package_id_revision_increment(self):
-    current_package_id = self.get_package_id()
-    if current_package_id:
-        package_id_parts = current_package_id.split(".")
-        new_revision_number = int(package_id_parts[2]) + 1
-        return f"{package_id_parts[0]}.{package_id_parts[1]}.{new_revision_number}"
-
-
 def update_package_id_tag(self) -> None:
     new_package_id = self.package_id_revision_increment()
     eml_tag = self.soup.find("eml:eml")
@@ -164,7 +157,9 @@ def increment_package_revision_number(id: str) -> str:
     return ".".join(split_id)
 
 
-def write_xml_to_blob(xml: BeautifulSoup, container_client: ContainerClient) -> str:
+def write_xml_to_blob(
+    xml: BeautifulSoup, container_client: ContainerClient
+) -> str | None:
     eml_tag = xml.find("eml:eml")
     if eml_tag is None:
         return None
@@ -183,12 +178,41 @@ app = func.FunctionApp()
 @app.route(route="publishPackage", auth_level=func.AuthLevel.ANONYMOUS)
 def publishPackage(req: func.HttpRequest) -> func.HttpResponse:
     package_number = req.params.get("package_number")
-    if package_number is None:
-        return func.HttpResponse(
-            "the package id number is not valid.\n", status_code=400
-        )
+    sql_query_path = req.params.get("sqlPath")
     az_conn_string = os.environ["AZURE_BLOB_CONN_STRING"]
     db_conn_string = os.environ["DB_CONN_STRING"]
+
+    if package_number is None:
+        response_data = {
+            "message": "the package id number is not valid",
+            "package_number": package_number,
+        }
+        response_json = json.dumps(response_data)
+
+        return func.HttpResponse(
+            response_json, mimetype="application/json", status_code=400
+        )
+
+    if az_conn_string is None:
+        response_data = {
+            "message": "an azure connection string is needed",
+        }
+        response_json = json.dumps(response_data)
+
+        return func.HttpResponse(
+            response_json, mimetype="application/json", status_code=402
+        )
+
+    if db_conn_string is None:
+        response_data = {
+            "message": "a database connection string is needed",
+        }
+        response_json = json.dumps(response_data)
+
+        return func.HttpResponse(
+            response_json, mimetype="application/json", status_code=402
+        )
+
     pipe = EDIPipe(package_number, az_conn_string, db_conn_string)
     initialize_pipe(pipe)
 
@@ -204,8 +228,17 @@ def publishPackage(req: func.HttpRequest) -> func.HttpResponse:
 
     update_eml(xml_soup, {EML_PATHS["csv_url"]: new_url})
 
-    # write_xml_to_blob(xml_soup, pipe.container_client)
-    return func.HttpResponse("EDI Pipeline Excecution Complete\n")
+    response_data = {
+        "message": "publish package execution complete",
+        "package_number": package_number,
+        "data_url": new_url,
+        "xml_url": xml_url,
+    }
+
+    response_json = json.dumps(response_data)
+
+    write_xml_to_blob(xml_soup, pipe.container_client)
+    return func.HttpResponse(response_json, mimetype="application/json")
 
 
 @app.route(route="listPackages", auth_level=func.AuthLevel.ANONYMOUS)
