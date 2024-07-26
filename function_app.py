@@ -14,8 +14,16 @@ import json
 from sqlalchemy.sql.base import Options
 from sqlalchemy.sql.lambdas import NonAnalyzedFunction
 
+from api import EDIAPI
+
+edi_username = os.environ["EDI_USERNAME"]
+edi_password = os.environ["EDI_PASSWORD}"]
+
+api = EDIAPI(edi_username, edi_password)
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 DB_NAME = os.getenv("DB_NAME") or "runiddb"
 DB_HOST = os.getenv("DB_HOST") or "localhost"
 DB_USER = os.getenv("DB_USER") or "emanuel"
@@ -143,13 +151,6 @@ def update_eml(eml: BeautifulSoup, kv: Dict[str, str]):
             current.append(val)
 
 
-def update_package_id_tag(self) -> None:
-    new_package_id = self.package_id_revision_increment()
-    eml_tag = self.soup.find("eml:eml")
-    if eml_tag:
-        eml_tag["packageId"] = new_package_id
-
-
 def increment_package_revision_number(id: str) -> str:
     split_id = id.split(".")
     revision = int(split_id[-1]) + 1
@@ -157,12 +158,8 @@ def increment_package_revision_number(id: str) -> str:
     return ".".join(split_id)
 
 
-def write_xml_to_blob(
-    xml: BeautifulSoup, container_client: ContainerClient
-) -> str | None:
+def write_xml_to_blob(xml: BeautifulSoup, container_client: ContainerClient) -> str:
     eml_tag = xml.find("eml:eml")
-    if eml_tag is None:
-        return None
     package_id = eml_tag.get("packageId")
     filename = f"xml/{package_id}.xml"
     blob_client = container_client.get_blob_client(filename)
@@ -215,6 +212,7 @@ def publishPackage(req: func.HttpRequest) -> func.HttpResponse:
 
     pipe = EDIPipe(package_number, az_conn_string, db_conn_string)
     initialize_pipe(pipe)
+    logger.info("publishPackage - pipe initialized")
 
     q = read_sql_from_file("data-query.sql")
     data = get_latest_data(pipe.db_engine, q)
@@ -225,19 +223,24 @@ def publishPackage(req: func.HttpRequest) -> func.HttpResponse:
     xmls = get_package_xmls(pipe.container_client, sort=True)
     xml_url = get_url_for_xml(xmls[0].name, pipe.container_client)
     xml_soup = parse_xml_from_url(xml_url)
+    current_eml_node = xml_soup.find("eml:eml")
+    current_package_id = current_eml_node["packageId"]
+    new_revision_number = increment_package_revision_number(current_package_id)
 
     update_eml(xml_soup, {EML_PATHS["csv_url"]: new_url})
+    new_eml_tag = xml_soup.find("eml:eml")
+    new_eml_tag["packageId"] = new_revision_number
+    new_xml_url = write_xml_to_blob(xml_soup, pipe.container_client)
 
     response_data = {
         "message": "publish package execution complete",
         "package_number": package_number,
         "data_url": new_url,
-        "xml_url": xml_url,
+        "xml_url": new_xml_url,
     }
 
     response_json = json.dumps(response_data)
 
-    write_xml_to_blob(xml_soup, pipe.container_client)
     return func.HttpResponse(response_json, mimetype="application/json")
 
 
