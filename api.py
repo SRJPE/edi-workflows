@@ -6,6 +6,7 @@ from dataclasses import dataclass
 class EDIAPI:
     username: str
     password: str
+    package_id: int
 
     def construct_auth(self):
         self.auth_string = (
@@ -55,4 +56,12 @@ class EDIAPI:
         headers = {"Content-Type": "application/xml"}
         resp = requests.post(url=upload_endpoint, data=xml_url, headers=headers)
 
+        return resp.text
+
+    def list_revisions(self):
+        revisions_list_endpoint = (
+            f"https://pasta.lternet.edu/package/eml/edi/{self.package_id}?filter=newest"
+        )
+
+        resp = requests.get(url=revisions_list_endpoint)
         return resp.text

@@ -19,7 +19,6 @@ from api import EDIAPI
 edi_username = os.environ["EDI_USERNAME"]
 edi_password = os.environ["EDI_PASSWORD}"]
 
-api = EDIAPI(edi_username, edi_password)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -151,9 +150,8 @@ def update_eml(eml: BeautifulSoup, kv: Dict[str, str]):
             current.append(val)
 
 
-def increment_package_revision_number(id: str) -> str:
+def increment_package_revision_number(id: str, revision: int) -> str:
     split_id = id.split(".")
-    revision = int(split_id[-1]) + 1
     split_id[-1] = str(revision)
     return ".".join(split_id)
 
@@ -211,6 +209,7 @@ def publishPackage(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     pipe = EDIPipe(package_number, az_conn_string, db_conn_string)
+    api = EDIAPI(edi_username, edi_password, int(package_number))
     initialize_pipe(pipe)
     logger.info("publishPackage - pipe initialized")
 
@@ -225,13 +224,15 @@ def publishPackage(req: func.HttpRequest) -> func.HttpResponse:
     xml_soup = parse_xml_from_url(xml_url)
     current_eml_node = xml_soup.find("eml:eml")
     current_package_id = current_eml_node["packageId"]
-    new_revision_number = increment_package_revision_number(current_package_id)
+    existing_revisions = api.list_revisions()
+    new_revision_number = increment_package_revision_number(
+        current_package_id, int(existing_revisions)
+    )
 
     update_eml(xml_soup, {EML_PATHS["csv_url"]: new_url})
     new_eml_tag = xml_soup.find("eml:eml")
     new_eml_tag["packageId"] = new_revision_number
     new_xml_url = write_xml_to_blob(xml_soup, pipe.container_client)
-
     response_data = {
         "message": "publish package execution complete",
         "package_number": package_number,
